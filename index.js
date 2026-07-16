@@ -142,6 +142,94 @@ server.registerTool(
 );
 
 server.registerTool(
+  "wiki_search_sections",
+  {
+    title: "Search within page sections",
+    description:
+      "Full-text search scored per-section instead of per-page: each result is a specific heading plus everything under it, not a whole-page snippet. This is the direct way to find which section covers a topic — skip the outline-then-guess-the-heading step, since a section's content can be about X even when its heading text doesn't say X. Optionally scope to one page via slugOrTitle; omit to search every page's sections.",
+    inputSchema: {
+      query: z.string(),
+      slugOrTitle: z.string().optional().describe("Restrict to one page's sections; omit to search across all pages"),
+      limit: z.number().int().positive().max(50).optional().default(10),
+    },
+  },
+  async ({ query, slugOrTitle, limit }) => {
+    try {
+      const results = await db.searchSections(query, { slugOrTitle, limit });
+      return text(results);
+    } catch (err) {
+      return errorResult(err);
+    }
+  }
+);
+
+server.registerTool(
+  "wiki_get_outline",
+  {
+    title: "Get wiki page outline",
+    description:
+      "List a page's markdown headings (index, level, heading text) without fetching the body. Use this first on a large page to see what sections exist, then pass the heading text or its index to wiki_get_section/wiki_update_section.",
+    inputSchema: {
+      slugOrTitle: z.string(),
+    },
+  },
+  async ({ slugOrTitle }) => {
+    try {
+      const outline = await db.getOutline(slugOrTitle);
+      return text(outline);
+    } catch (err) {
+      return errorResult(err);
+    }
+  }
+);
+
+server.registerTool(
+  "wiki_get_section",
+  {
+    title: "Get one section of a wiki page",
+    description:
+      "Fetch a single section (a heading plus everything under it, up to the next heading of the same or shallower level) instead of the whole page. Match by 'heading' (exact text, or a case-insensitive substring if unambiguous) or by 'index' (1-based, from wiki_get_outline). Errors with a candidate list if the heading substring is ambiguous.",
+    inputSchema: {
+      slugOrTitle: z.string(),
+      heading: z.string().optional().describe("Exact heading text, or a unique case-insensitive substring of it"),
+      index: z.number().int().positive().optional().describe("1-based section index from wiki_get_outline"),
+    },
+  },
+  async ({ slugOrTitle, heading, index }) => {
+    try {
+      const section = await db.getSection(slugOrTitle, { heading, index });
+      return text(section);
+    } catch (err) {
+      return errorResult(err);
+    }
+  }
+);
+
+server.registerTool(
+  "wiki_update_section",
+  {
+    title: "Update one section of a wiki page",
+    description:
+      "Replace or append to a single section's content without touching the rest of the page. Match the section the same way as wiki_get_section ('heading' or 'index'). mode='replace' (default) overwrites the whole section including its heading line (include the heading line in 'content' — omitting it deletes the heading); mode='append' adds content to the end of the existing section, keeping its current heading and body.",
+    inputSchema: {
+      slug: z.string().describe("Slug of the page to update"),
+      heading: z.string().optional().describe("Exact heading text, or a unique case-insensitive substring of it"),
+      index: z.number().int().positive().optional().describe("1-based section index from wiki_get_outline"),
+      content: z.string().describe("New section content (replace mode: include the heading line; append mode: just the text to add)"),
+      mode: z.enum(["replace", "append"]).optional().default("replace"),
+    },
+  },
+  async ({ slug, heading, index, content, mode }) => {
+    try {
+      const page = await db.updateSection({ slug, heading, index, content, mode });
+      return text(page);
+    } catch (err) {
+      return errorResult(err);
+    }
+  }
+);
+
+server.registerTool(
   "wiki_backlinks",
   {
     title: "Get backlinks",

@@ -236,6 +236,55 @@ export async function search(query, { limit = 10 } = {}) {
   return results.slice(0, limit);
 }
 
+export async function searchSections(query, { slugOrTitle, limit = 10 } = {}) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const terms = q.split(/\s+/).filter(Boolean);
+
+  const pages = slugOrTitle ? [await getPage(slugOrTitle)] : await loadAll();
+
+  const results = [];
+  for (const page of pages) {
+    const { lines, headings } = parseOutline(page.body);
+    for (let i = 0; i < headings.length; i++) {
+      const h = headings[i];
+      const sectionText = lines.slice(h.lineStart, h.lineEnd + 1).join("\n");
+      const sectionLower = sectionText.toLowerCase();
+      const headingLower = h.heading.toLowerCase();
+      let score = 0;
+      let firstIdx = -1;
+      for (const term of terms) {
+        if (headingLower.includes(term)) score += 10;
+        const idx = sectionLower.indexOf(term);
+        if (idx !== -1) {
+          score += 1;
+          let count = 0;
+          let pos = idx;
+          while (pos !== -1) {
+            count++;
+            pos = sectionLower.indexOf(term, pos + term.length);
+          }
+          score += count - 1;
+          if (firstIdx === -1) firstIdx = idx;
+        }
+      }
+      if (score > 0) {
+        results.push({
+          slug: page.slug,
+          title: page.title,
+          sectionIndex: i + 1,
+          heading: h.heading,
+          level: h.level,
+          score,
+          snippet: firstIdx !== -1 ? snippet(sectionText, firstIdx) : sectionText.slice(0, 120).trim(),
+        });
+      }
+    }
+  }
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, limit);
+}
+
 export async function backlinks(slug) {
   const resolvedSlug = slugify(slug);
   const all = await loadAll();
@@ -255,6 +304,111 @@ export async function graph() {
     }
   }
   return { nodes, edges };
+}
+
+const HEADING_RE = /^(#{1,6})\s+(.+?)\s*$/;
+
+function parseOutline(body) {
+  const lines = body.split("\n");
+  const headings = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(HEADING_RE);
+    if (m) headings.push({ level: m[1].length, heading: m[2], lineStart: i });
+  }
+  for (let i = 0; i < headings.length; i++) {
+    let end = lines.length - 1;
+    for (let j = i + 1; j < headings.length; j++) {
+      if (headings[j].level <= headings[i].level) {
+        end = headings[j].lineStart - 1;
+        break;
+      }
+    }
+    headings[i].lineEnd = end;
+  }
+  return { lines, headings };
+}
+
+function matchHeading(headings, { heading, index }) {
+  if (index !== undefined && index !== null) {
+    if (!Number.isInteger(index) || index < 1 || index > headings.length) {
+      throw new Error(`index out of range: page has ${headings.length} section(s)`);
+    }
+    return headings[index - 1];
+  }
+  if (!heading || !heading.trim()) {
+    throw new Error("Provide either 'heading' or 'index'");
+  }
+  const needle = heading.trim().toLowerCase();
+  const exact = headings.filter((h) => h.heading.toLowerCase() === needle);
+  if (exact.length === 1) return exact[0];
+  const partial = headings.filter((h) => h.heading.toLowerCase().includes(needle));
+  if (partial.length === 1) return partial[0];
+  if (partial.length > 1) {
+    const list = partial
+      .map((h) => `#${headings.indexOf(h) + 1}: ${h.heading}`)
+      .join("; ");
+    throw new Error(
+      `Ambiguous heading "${heading}" matches ${partial.length} sections: ${list}. Retry with 'index' or a more specific 'heading'.`
+    );
+  }
+  throw new Error(`No section matching "${heading}". Use wiki_get_outline to list available section headings.`);
+}
+
+export async function getOutline(slugOrTitle) {
+  const page = await getPage(slugOrTitle);
+  const { headings } = parseOutline(page.body);
+  return {
+    slug: page.slug,
+    title: page.title,
+    sections: headings.map((h, i) => ({ index: i + 1, level: h.level, heading: h.heading })),
+  };
+}
+
+export async function getSection(slugOrTitle, { heading, index } = {}) {
+  const page = await getPage(slugOrTitle);
+  const { lines, headings } = parseOutline(page.body);
+  if (headings.length === 0) {
+    throw new Error(`Page "${page.slug}" has no markdown headings to select a section from.`);
+  }
+  const match = matchHeading(headings, { heading, index });
+  const sectionText = lines.slice(match.lineStart, match.lineEnd + 1).join("\n").trim();
+  return {
+    slug: page.slug,
+    title: page.title,
+    sectionIndex: headings.indexOf(match) + 1,
+    totalSections: headings.length,
+    heading: match.heading,
+    level: match.level,
+    body: sectionText,
+  };
+}
+
+export async function updateSection({ slug, heading, index, content, mode = "replace" }) {
+  const resolvedSlug = slugify(slug);
+  if (!(await slugExists(resolvedSlug))) {
+    throw new Error(`No page with slug "${resolvedSlug}".`);
+  }
+  const existing = await readPage(resolvedSlug);
+  const { lines, headings } = parseOutline(existing.body);
+  if (headings.length === 0) {
+    throw new Error(`Page "${resolvedSlug}" has no markdown headings to select a section from.`);
+  }
+  const match = matchHeading(headings, { heading, index });
+  const before = lines.slice(0, match.lineStart);
+  const after = lines.slice(match.lineEnd + 1);
+  const existingSectionText = lines.slice(match.lineStart, match.lineEnd + 1).join("\n").trim();
+  const newSectionText =
+    mode === "append" ? `${existingSectionText}\n\n${content.trim()}` : content.trim();
+  const newBody = [...before, newSectionText, ...after].join("\n").trim();
+  const meta = {
+    title: existing.title,
+    tags: existing.tags,
+    created: existing.created,
+    updated: new Date().toISOString(),
+  };
+  const raw = `${serializeFrontmatter(meta)}\n\n${newBody}\n`;
+  await fs.writeFile(await pagePath(resolvedSlug), raw, "utf8");
+  return readPage(resolvedSlug);
 }
 
 export function dataDir() {

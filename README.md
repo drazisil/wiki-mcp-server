@@ -30,6 +30,10 @@ assistant a proper (if minimal) knowledge base instead:
 | `wiki_delete_page` | Delete a page |
 | `wiki_list_pages` | List all pages, optionally filtered by tag, newest-updated first |
 | `wiki_search` | Ranked full-text search with snippets |
+| `wiki_search_sections` | Same, but scored per-section — finds the right heading even when its text doesn't mention the query |
+| `wiki_get_outline` | List a page's headings (index, level, text) without fetching the body |
+| `wiki_get_section` | Fetch just one section (by heading text or outline index), not the whole page |
+| `wiki_update_section` | Replace or append to just one section, leaving the rest of the page untouched |
 | `wiki_backlinks` | List every page that links to a given page |
 | `wiki_graph` | Get the whole wiki as a `{ nodes, edges }` graph |
 
@@ -100,6 +104,27 @@ wiki_search({ query: "roadmap" })
 
 wiki_backlinks({ slug: "api-redesign" })
 // → [{ slug: "project-roadmap", title: "Project Roadmap" }]
+```
+
+For a page too large to fetch whole, jump straight to the relevant section by content — no need to
+guess from heading text alone:
+
+```
+wiki_search_sections({ query: "budget overrun" })
+// → [{ slug: "project-roadmap", sectionIndex: 2, heading: "Risks", score: 3, snippet: "...budget overrun..." }]
+
+wiki_get_section({ slugOrTitle: "project-roadmap", index: 2 })
+// → { heading: "Risks", body: "## Risks\n..." }
+
+wiki_update_section({ slug: "project-roadmap", index: 2, content: "## Risks\nUpdated risk list.", mode: "replace" })
+```
+
+Or browse a page's structure directly with `wiki_get_outline` when you already know roughly what
+you're looking for:
+
+```
+wiki_get_outline({ slugOrTitle: "project-roadmap" })
+// → { sections: [{ index: 1, level: 2, heading: "Q3 goals" }, { index: 2, level: 2, heading: "Risks" }, ...] }
 ```
 
 ## License
